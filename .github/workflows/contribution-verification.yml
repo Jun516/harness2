@@ -1,0 +1,78 @@
+name: Harness2 contribution verification
+
+on:
+  push:
+    branches:
+      - verification/harness2-two-pr
+
+permissions:
+  contents: read
+
+jobs:
+  offline-tests:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: baseline
+            revision: 1cfe254e8d25b15f37048c3730134686abe60335
+            production: ""
+            regression: ""
+            expected_failures: ""
+          - name: workbuddy-prefix
+            revision: be89ab7173cc851194b8b0137aa12c97eccf83d1
+            production: harness2/benchmarks/workbuddy.py
+            regression: test_workbuddy_task_resolution.py
+            expected_failures: "2"
+          - name: hook-commands
+            revision: 367edcbbfb675dbe0381462bb9cf75ea4d91fd45
+            production: harness2/core/tree.py
+            regression: test_hook_command_validation.py
+            expected_failures: "10"
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUTF8: "1"
+      BASE: 1cfe254e8d25b15f37048c3730134686abe60335
+      REVISION: ${{ matrix.revision }}
+      PRODUCTION: ${{ matrix.production }}
+      REGRESSION: ${{ matrix.regression }}
+      EXPECTED_FAILURES: ${{ matrix.expected_failures }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ matrix.revision }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Environment and lint
+        run: |
+          python --version
+          uname -a
+          python -m pip install ruff==0.17.2
+          ruff check .
+          if [ -n "$REGRESSION" ]; then
+            ruff format --check "$PRODUCTION" "tests/$REGRESSION"
+          fi
+      - name: Third-party provenance
+        run: python scripts/check_provenance.py
+      - name: Demonstrate regression on the unchanged implementation
+        if: matrix.regression != ''
+        shell: bash
+        run: |
+          git show "$BASE:$PRODUCTION" > "$PRODUCTION"
+          if python -m unittest discover -s tests -p "$REGRESSION" -v > before.log 2>&1; then
+            cat before.log
+            echo "Regression unexpectedly passed without the production fix" >&2
+            exit 1
+          fi
+          cat before.log
+          grep -F "FAILED (failures=$EXPECTED_FAILURES)" before.log
+          git show "$REVISION:$PRODUCTION" > "$PRODUCTION"
+          git diff --exit-code -- "$PRODUCTION"
+      - name: Complete offline test suite
+        run: python -m unittest discover -s tests -v
